@@ -1,0 +1,43 @@
+/* Extracted styles from index.html */
+body { margin: 0; overflow: hidden; background: #000; }
+canvas { display: block; }
+#ui-container {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    color: white;
+    font-family: 'Monaco', 'Courier New', monospace;
+    pointer-events: none; /* Let clicks pass through to the canvas */
+}
+#score {
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    font-size: 24px;
+}
+#lives {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    font-size: 24px;
+}
+#message-box {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(0, 0, 0, 0.7);
+    padding: 40px;
+    border-radius: 10px;
+    text-align: center;
+    font-size: 28px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    pointer-events: auto; /* Allow clicks on this element */
+}
+#message-box h1 { margin-top: 0; }
+
+.controls { font-size: 16px; }
