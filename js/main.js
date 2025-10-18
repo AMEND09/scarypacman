@@ -21,6 +21,35 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
 
+// --- GHOST PROXIMITY OVERLAY ---
+// Create a container for the directional red overlays that show ghost proximity.
+const overlayContainer = document.createElement('div');
+overlayContainer.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 10;
+`;
+// Create individual overlay elements for each direction.
+const overlayTop = document.createElement('div');
+overlayTop.style.cssText = 'position: absolute; top: 0; left: 0; width: 100%; height: 50%; background: linear-gradient(to bottom, rgba(255,0,0,0.6), transparent); opacity: 0; transition: opacity 0.2s;';
+const overlayBottom = document.createElement('div');
+overlayBottom.style.cssText = 'position: absolute; bottom: 0; left: 0; width: 100%; height: 50%; background: linear-gradient(to top, rgba(255,0,0,0.6), transparent); opacity: 0; transition: opacity 0.2s;';
+const overlayLeft = document.createElement('div');
+overlayLeft.style.cssText = 'position: absolute; top: 0; left: 0; width: 50%; height: 100%; background: linear-gradient(to right, rgba(255,0,0,0.6), transparent); opacity: 0; transition: opacity 0.2s;';
+const overlayRight = document.createElement('div');
+overlayRight.style.cssText = 'position: absolute; top: 0; right: 0; width: 50%; height: 100%; background: linear-gradient(to left, rgba(255,0,0,0.6), transparent); opacity: 0; transition: opacity 0.2s;';
+
+overlayContainer.appendChild(overlayTop);
+overlayContainer.appendChild(overlayBottom);
+overlayContainer.appendChild(overlayLeft);
+overlayContainer.appendChild(overlayRight);
+document.body.appendChild(overlayContainer);
+
+
 // Post-processing: bloom for emissive glow (replaces per-pellet dynamic lights)
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
@@ -28,10 +57,12 @@ const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, windo
 composer.addPass(bloomPass);
 
 // --- LIGHTING ---
-// Keep the scene very dark; only pellets (orbs) and ghosts emit light.
+const AMBIENT_INTENSITY_DARK = 0.05; // The scene's default, dark ambient light level.
+const AMBIENT_INTENSITY_BRIGHT = 0.5; // The scene's brightness when a power pellet is active.
+let targetAmbientIntensity = AMBIENT_INTENSITY_DARK;
+
 scene.fog = new THREE.FogExp2(0x000000, 0.06);
-// Minimal ambient (effectively off) so walls are only lit by local lights
-const ambientLight = new THREE.AmbientLight(0x000000, 0.0);
+const ambientLight = new THREE.AmbientLight(0x404040, AMBIENT_INTENSITY_DARK);
 scene.add(ambientLight);
 renderer.shadowMap.enabled = false;
 
@@ -268,7 +299,7 @@ class Ghost {
         this.mesh.position.set(startPos.x, 0.7, startPos.z);
         scene.add(this.mesh);
 
-                this.speed = 1.8;
+                this.speed = 1.5; // Reduced from 1.8 to make ghosts slightly slower
                 this.state = 'chasing'; // chasing, frightened, eaten
                 this.frightenedTimer = 0;
     }
@@ -285,6 +316,10 @@ class Ghost {
             if (this.frightenedTimer <= 0) {
                 this.state = 'chasing';
                 this.mesh.material = this.normalMaterial;
+                // Once the last frightened ghost reverts, dim the lights.
+                if (!ghosts.some(g => g.state === 'frightened')) {
+                    targetAmbientIntensity = AMBIENT_INTENSITY_DARK;
+                }
             }
         }
          if (this.state === 'eaten') {
@@ -382,10 +417,15 @@ function animate() {
     requestAnimationFrame(animate);
     const delta = clock.getDelta();
 
+    // Smoothly transition the ambient light towards its target intensity.
+    const transitionSpeed = 2.0; // Controls how fast the light fades in and out.
+    ambientLight.intensity += (targetAmbientIntensity - ambientLight.intensity) * transitionSpeed * delta;
+
     if (gameState === 'playing' && controls.isLocked) {
-    updatePlayer(delta);
+        updatePlayer(delta);
         checkCollisions();
         ghosts.forEach(ghost => ghost.update(delta, camera.position));
+        updateProximityOverlay();
     }
 
     // Render through composer so emissive materials bloom without dynamic lights
@@ -442,6 +482,8 @@ function checkCollisions() {
         if (camera.position.distanceTo(pellet.position) < 0.5) {
             if (pellet.isPowerPellet) {
                 score += 50;
+                // When a power pellet is eaten, brighten the lights and frighten the ghosts.
+                targetAmbientIntensity = AMBIENT_INTENSITY_BRIGHT;
                 ghosts.forEach(g => g.frighten());
             } else {
                 score += 10;
@@ -459,16 +501,62 @@ function checkCollisions() {
     // Ghosts
     for (const ghost of ghosts) {
         if (camera.position.distanceTo(ghost.mesh.position) < 0.5) {
+            // If the player collides with a frightened ghost, the player eats it.
             if (ghost.state === 'frightened') {
                 score += 200;
                 scoreEl.textContent = `Score: ${score}`;
                 ghost.eat();
             } else if (ghost.state === 'chasing') {
+                // Otherwise, if the ghost is chasing, the player loses a life.
                 playerLosesLife();
                 break;
             }
         }
     }
+}
+
+function updateProximityOverlay() {
+    const DANGER_DISTANCE = 8.0; // How close a ghost must be to trigger the effect
+    const MAX_OPACITY = 0.8; // Maximum opacity for the effect
+
+    let totalInfluence = { top: 0, bottom: 0, left: 0, right: 0 };
+
+    const cameraDirection = new THREE.Vector3();
+    camera.getWorldDirection(cameraDirection);
+    // Vector pointing to the camera's right
+    const cameraRight = new THREE.Vector3().crossVectors(camera.up, cameraDirection).negate();
+
+    for (const ghost of ghosts) {
+        // The overlay only appears for chasing ghosts that are a threat.
+        if (ghost.state !== 'chasing') continue;
+
+        const dist = camera.position.distanceTo(ghost.mesh.position);
+
+        if (dist < DANGER_DISTANCE) {
+            // proximity is a value from 0 (at max distance) to 1 (at zero distance)
+            const proximity = 1.0 - (dist / DANGER_DISTANCE);
+
+            // Vector from camera to the ghost
+            const toGhost = new THREE.Vector3().subVectors(ghost.mesh.position, camera.position).normalize();
+
+            // Dot product gives us the alignment with camera's forward and right vectors
+            const forwardComponent = toGhost.dot(cameraDirection); // Positive: in front, Negative: behind
+            const rightComponent = toGhost.dot(cameraRight);     // Positive: right, Negative: left
+
+            // Accumulate influence for each direction based on proximity and angle
+            // Use Math.max to only consider positive contributions
+            totalInfluence.top += proximity * Math.max(0, forwardComponent);
+            totalInfluence.bottom += proximity * Math.max(0, -forwardComponent);
+            totalInfluence.right += proximity * Math.max(0, rightComponent);
+            totalInfluence.left += proximity * Math.max(0, -rightComponent);
+        }
+    }
+
+    // Apply the calculated opacity to each overlay, capped at the max opacity.
+    overlayTop.style.opacity = Math.min(MAX_OPACITY, totalInfluence.top);
+    overlayBottom.style.opacity = Math.min(MAX_OPACITY, totalInfluence.bottom);
+    overlayLeft.style.opacity = Math.min(MAX_OPACITY, totalInfluence.left);
+    overlayRight.style.opacity = Math.min(MAX_OPACITY, totalInfluence.right);
 }
     
 function playerLosesLife() {
