@@ -1,4 +1,4 @@
-/* Extracted styles from index.html */
+/* Global CSS for the game UI */
 body { margin: 0; overflow: hidden; background: #000; }
 canvas { display: block; }
 /* UI tweaks for clearer HUD */
@@ -12,14 +12,16 @@ canvas { display: block; }
     font-family: Inter, system-ui, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;
     pointer-events: none; /* Let clicks pass through to the canvas */
 }
+/* Score (top-left) */
 #score {
     position: absolute;
     top: 20px;
     left: 20px;
     font-size: 24px;
 }
-/* HUD elements */
-#score {
+
+/* Lives (top-right) */
+#lives {
     position: absolute;
     top: 20px;
     right: 20px;

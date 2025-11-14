@@ -1,28 +1,28 @@
-// Main module extracted from index.html
+// Main JS for the 3D Pac-Man game
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 
-// --- SCENE SETUP ---
+// --- Scene setup ---
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x000000);
-// Increase near plane slightly to improve depth buffer precision (but not so large it clips the maze)
+// Increase near plane to improve depth precision
 const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.5, 1000);
 camera.position.y = 0.5; // Player height
-// Add camera to scene so camera children (like the player light) are part of the scene graph
+// Add camera to scene for attached child objects (like player light)
 scene.add(camera);
 
-// Enable logarithmicDepthBuffer to reduce z-fighting on large depth ranges
+// Use logarithmic depth buffer to reduce z-fighting
 const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
-// Cap pixel ratio to avoid excessive GPU work on high-DPI displays
+// Cap pixel ratio to limit GPU load on high-DPI screens
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
 
-// --- GHOST PROXIMITY OVERLAY ---
-// Create a container for the directional red overlays that show ghost proximity.
+// --- Proximity overlay ---
+// Container for directional red overlays (ghost proximity)
 const overlayContainer = document.createElement('div');
 overlayContainer.style.cssText = `
     position: fixed;
@@ -33,7 +33,7 @@ overlayContainer.style.cssText = `
     pointer-events: none;
     z-index: 10;
 `;
-// Create individual overlay elements for each direction.
+// Top/bottom/left/right overlay elements
 const overlayTop = document.createElement('div');
 overlayTop.style.cssText = 'position: absolute; top: 0; left: 0; width: 100%; height: 50%; background: linear-gradient(to bottom, rgba(255,0,0,0.6), transparent); opacity: 0; transition: opacity 0.2s;';
 const overlayBottom = document.createElement('div');
@@ -50,7 +50,7 @@ overlayContainer.appendChild(overlayRight);
 document.body.appendChild(overlayContainer);
 
 
-// Post-processing: bloom for emissive glow (replaces per-pellet dynamic lights)
+// Post-processing: bloom for emissive glow
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
 const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.9, 0.4, 0.1);
@@ -77,7 +77,7 @@ function playSound(id) {
     if (window.createjs && createjs.Sound && createjs.Sound.play) {
         try { createjs.Sound.play(id); return; } catch(e){}
     }
-    // fallback to vanilla audio
+    // fallback to HTMLAudio
     try { new Audio(soundMap[id]).play(); } catch(e){}
 }
 
@@ -104,7 +104,7 @@ function playChomp() {
         osc.start(now);
         osc.stop(now + 0.16);
     } catch (e) {
-        // fallback to existing coin sound
+        // fallback to coin audio
         playSound('coin');
     }
 }
@@ -326,7 +326,7 @@ for (let i = 0; i < mazeHeight; i++) {
                 } else if (mazeLayout[i][j] === 0) {
                     const pellet = new THREE.Mesh(
                         new THREE.SphereGeometry(0.1, 6, 6),
-                        // reduce emissive intensity so orbs produce less overall light
+                        // lower emissive intensity for pellets
                         new THREE.MeshStandardMaterial({ color: 0xffff88, emissive: 0xffff66, emissiveIntensity: 0.7, roughness: 1.0 })
                     );
                     pellet.position.set(x, 0.5, z);
@@ -337,7 +337,7 @@ for (let i = 0; i < mazeHeight; i++) {
         } else if (mazeLayout[i][j] === 3) {
                     const powerPellet = new THREE.Mesh(
                         new THREE.SphereGeometry(0.25, 12, 12),
-                        // reduce emissive intensity on power pellets as well
+                        // lower emissive intensity for power pellets
                         new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 1.0, roughness: 1.0 })
                     );
                     powerPellet.position.set(x, 0.5, z);
@@ -376,7 +376,7 @@ camera.add(playerLight);
     // Camera bobbing while walking (reduced amplitude for less motion)
     let bobTimer = 0;
     const BOB_SPEED = 6; // how fast the bob cycles (slower)
-    const BOB_AMPLITUDE = 0.015; // reduced vertical bob amplitude
+    const BOB_AMPLITUDE = 0.015; // camera bob amplitude
 
 messageBox.addEventListener('click', () => {
     controls.lock();
@@ -435,7 +435,7 @@ class Ghost {
         this.mesh.position.set(startPos.x, 0.7, startPos.z);
         scene.add(this.mesh);
 
-                this.speed = 1.5; // Reduced from 1.8 to make ghosts slightly slower
+                this.speed = 1.5; // ghost base speed
                 this.type = type; // blinky/pinky/inky/clyde/generic
                 this.state = 'chasing'; // chasing, frightened, eaten, scatter
                 this.frightenedTimer = 0;
@@ -455,7 +455,7 @@ class Ghost {
             if (this.frightenedTimer <= 0) {
                 this.state = 'chasing';
                 this.mesh.material = this.normalMaterial;
-                // Once the last frightened ghost reverts, dim the lights.
+                // When frightened ends, revert ambient light
                 if (!ghosts.some(g => g.state === 'frightened')) {
                     targetAmbientIntensity = AMBIENT_INTENSITY_DARK;
                 }
@@ -513,10 +513,10 @@ class Ghost {
         const ghostPos = this.mesh.position;
         const direction = new THREE.Vector3().subVectors(target, ghostPos).normalize();
         
-        // Simplified AI: Move towards target, avoiding walls.
+        // Move toward target and avoid walls
         const move = direction.multiplyScalar(this.speed * delta);
         
-        // A very basic wall avoidance by picking the dominant axis of movement.
+        // Simple wall-slide per-axis
         const nextPos = ghostPos.clone().add(move);
         const currentTile = {
             x: Math.floor(ghostPos.x / TILE_SIZE),
@@ -559,7 +559,7 @@ class Ghost {
             const tempX = ghostPos.clone(); tempX.x += move.x; if (!this.isWall(tempX)) ghostPos.x = tempX.x;
             const tempZ = ghostPos.clone(); tempZ.z += move.z; if (!this.isWall(tempZ)) ghostPos.z = tempZ.z;
         } else {
-            // fallback to direct movement
+            // fallback to straight movement
             this.moveTowards(target, delta);
         }
     }
@@ -572,7 +572,7 @@ class Ghost {
     }
 
     getFleeTarget(playerPosition) {
-        // Run to a random corner
+        // Flee to a random corner
         const corners = [
             new THREE.Vector3(1*TILE_SIZE, 0, 1*TILE_SIZE),
             new THREE.Vector3(17*TILE_SIZE, 0, 1*TILE_SIZE),
@@ -605,7 +605,7 @@ class Ghost {
     
     eat() {
         this.state = 'eaten';
-        // You could add a simple "eyes" mesh that remains visible
+        // add 'eyes' visual for eaten state
         // Use a bright material and small eyes to indicate eaten state
         this.mesh.material = new THREE.MeshBasicMaterial({ color: 0xffffff });
         const eyeGeo = new THREE.SphereGeometry(0.06, 6, 6);
@@ -648,7 +648,7 @@ function animate() {
     modeTimer += delta;
     if (modeTimer > 12) { ghostMode = (ghostMode === 'chase') ? 'scatter' : 'chase'; modeTimer = 0; }
 
-    // Proximity audio: measure nearest 'chasing' ghost and modulate tone
+    // Proximity audio: nearest chasing ghost modulates tone
     let nearest = Infinity;
     for (const g of ghosts) {
         if (g.state === 'chasing') {
@@ -727,7 +727,7 @@ function checkCollisions() {
             scoreEl.textContent = `Score: ${score}`;
             scene.remove(pellet);
             pellets.splice(i, 1);
-            // Fallback: recompute coins collected from remaining pellets (robust sync)
+            // Recompute coins from pellets to keep counters in sync
             coinsCollected = (totalCoins || 0) - pellets.filter(p => !p.isPowerPellet).length;
             updateCoinsUI();
 
@@ -832,12 +832,12 @@ function updateProximityOverlay() {
 
 function updateCoinsUI() {
     if (!coinsEl) return;
-        // fallback: recompute from remaining pellets to keep in sync
+        // Recompute coins from remaining pellets (sync fallback)
         coinsCollected = (totalCoins || 0) - pellets.filter(p => !p.isPowerPellet).length;
         coinsEl.textContent = `Coins: ${coinsCollected}/${levelGoalCount || totalCoins}`;
 }
 
-// --- PATHFINDING (BFS) ---
+// --- Pathfinding (A*) ---
 function getNeighbors(tile) {
     const deltas = [ {x:1,z:0}, {x:-1,z:0}, {x:0,z:1}, {x:0,z:-1} ];
     const out = [];
@@ -890,7 +890,7 @@ function getPath(start, goal) {
     return null;
 }
 
-// --- POWERUPS ---
+// --- Powerups ---
 const POWERUP_TYPES = ['speed', 'freeze', 'doubleScore'];
 const activePowerups = {};
 
@@ -1009,7 +1009,7 @@ function showYouDiedScreen(seconds) {
 }
     
 function playerWins() {
-    // Advance to next level if available
+    // Move to next level when current one completes
     if (currentLevel < levels.length - 1) {
         currentLevel++;
         // reset game for the next level
@@ -1035,10 +1035,10 @@ function resetGame() {
     scoreEl.textContent = `Score: ${score}`;
     livesEl.textContent = `Lives: ${lives}`;
     
-    // Remove old pellets and create new ones
+    // Re-populate pellets
     pellets.forEach(p => scene.remove(p));
     pellets.length = 0;
-    // Remove powerups
+    // Remove powerups before respawning
     powerupObjects.forEach(p => scene.remove(p.mesh));
     powerupObjects.length = 0;
     
