@@ -56,6 +56,101 @@ composer.addPass(new RenderPass(scene, camera));
 const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.9, 0.4, 0.1);
 composer.addPass(bloomPass);
 
+// --- SOUND SETUP (SoundJS) ---
+const soundMap = {
+    coin: 'https://actions.google.com/sounds/v1/cartoon/coin_drop.ogg',
+    power: 'https://actions.google.com/sounds/v1/cartoon/clang_and_wobble.ogg',
+    ghost_eaten: 'https://actions.google.com/sounds/v1/cartoon/boing.ogg',
+    // If a local death sound exists (in public/assets) use it; otherwise use the remote fallback
+    die: 'public/assets/scary-scream-3-81274.mp3' || 'https://actions.google.com/sounds/v1/alarms/beep_short.ogg',
+    level_up: 'https://actions.google.com/sounds/v1/cartoon/fairy_chime.ogg'
+};
+
+function registerSounds() {
+    try {
+        if (window.createjs && createjs.Sound) {
+            Object.entries(soundMap).forEach(([id, url]) => createjs.Sound.registerSound(url, id));
+        }
+    } catch (e) { /* ignore */ }
+}
+function playSound(id) {
+    if (window.createjs && createjs.Sound && createjs.Sound.play) {
+        try { createjs.Sound.play(id); return; } catch(e){}
+    }
+    // fallback to vanilla audio
+    try { new Audio(soundMap[id]).play(); } catch(e){}
+}
+
+// Play a small 'chomp' sound — uses WebAudio when available for a short pitch-drop.
+function playChomp() {
+    try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        const ctx = new AudioCtx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'square';
+        osc.frequency.value = 900; // start frequency
+        gain.gain.value = 0.0001;
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        const now = ctx.currentTime;
+        // amplitude envelope
+        gain.gain.setValueAtTime(0.0001, now);
+        gain.gain.linearRampToValueAtTime(0.08, now + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
+        // quick downward pitch for 'chomp'
+        osc.frequency.setValueAtTime(900, now);
+        osc.frequency.exponentialRampToValueAtTime(350, now + 0.14);
+        osc.start(now);
+        osc.stop(now + 0.16);
+    } catch (e) {
+        // fallback to existing coin sound
+        playSound('coin');
+    }
+}
+registerSounds();
+
+// --- PROXIMITY AUDIO (WebAudio) ---
+let proximityAudio = null;
+
+function initProximityAudio() {
+    if (proximityAudio) return proximityAudio;
+    try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        const ctx = new AudioCtx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        // gentle starting values
+        osc.type = 'sine';
+        osc.frequency.value = 1400; // high pitch
+        gain.gain.value = 0.0;
+        // set smoothing
+        gain.gain.setTargetAtTime(0, ctx.currentTime, 0.01);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        proximityAudio = { ctx, osc, gain, maxDistance: 12 };
+        return proximityAudio;
+    } catch (e) {
+        proximityAudio = null;
+        return null;
+    }
+}
+
+function updateProximityAudio(minDistance) {
+    // initialize lazily on first user interaction
+    const prox = proximityAudio || initProximityAudio();
+    if (!prox) return;
+    // volume scales with how close the nearest chasing ghost is
+    const md = Math.max(0.001, Math.min(prox.maxDistance, minDistance));
+    const normalized = Math.max(0, 1 - md / prox.maxDistance);
+    // slightly non-linear
+    const vol = Math.pow(normalized, 1.6) * 0.03; // even quieter
+    prox.gain.gain.setTargetAtTime(vol, prox.ctx.currentTime, 0.04);
+    // gently shift frequency range for a subtle effect
+    prox.osc.frequency.setTargetAtTime(200 + normalized * 400, prox.ctx.currentTime, 0.05);
+}
+
 // --- LIGHTING ---
 const AMBIENT_INTENSITY_DARK = 0.05; // The scene's default, dark ambient light level.
 const AMBIENT_INTENSITY_BRIGHT = 0.5; // The scene's brightness when a power pellet is active.
@@ -75,6 +170,27 @@ const livesEl = document.getElementById('lives');
 const messageBox = document.getElementById('message-box');
 const messageTitle = messageBox.querySelector('h1');
 const messageText = messageBox.querySelector('p');
+const coinsEl = document.getElementById('coins');
+const youDiedEl = document.getElementById('you-died');
+const respawnCounterEl = document.getElementById('respawn-count');
+
+// Powerups UI overlay (center)
+const powerupsEl = document.createElement('div');
+powerupsEl.id = 'powerup-status';
+document.getElementById('ui-container').appendChild(powerupsEl);
+
+// Level indicator
+const levelEl = document.createElement('div');
+levelEl.id = 'level-indicator';
+levelEl.style.position = 'absolute';
+levelEl.style.top = '20px';
+levelEl.style.left = '50%';
+levelEl.style.transform = 'translateX(-50%)';
+levelEl.style.background = 'rgba(0,0,0,0.4)';
+levelEl.style.padding = '8px 12px';
+levelEl.style.borderRadius = '10px';
+levelEl.textContent = 'Tutorial';
+document.getElementById('ui-container').appendChild(levelEl);
 
 // --- MAZE DEFINITION ---
 // 1 = Wall, 0 = Path (Pellet), 2 = Empty, 3 = Power Pellet, 4 = Ghost Pen
@@ -107,6 +223,11 @@ const mazeHeight = mazeLayout.length;
 const mazeObjects = [];
 const pellets = [];
 let totalPellets = 0;
+let powerupObjects = [];
+let consecutiveGhostEaten = 0;
+let coinsCollected = 0;
+let totalCoins = 0;
+let levelGoalCount = 0;
 
 // --- ASSETS & MATERIALS ---
 // Replace wall texture with a simple blue matte material or a blue brick pattern.
@@ -227,10 +348,17 @@ for (let i = 0; i < mazeHeight; i++) {
         }
     }
 }
+
+// After initial pellet creation, compute total coins for UI & progression
+coinsCollected = 0;
+totalCoins = pellets.filter(p => !p.isPowerPellet).length;
+// default initial level goals
+levelGoalCount = totalCoins;
+updateCoinsUI();
     
 // --- PLAYER CONTROLS ---
     const controls = new PointerLockControls(camera, document.body);
-    const playerSpeed = 2.5;
+    let playerSpeed = 2.5;
     const playerVelocity = new THREE.Vector3();
     const playerDirection = new THREE.Vector3();
     let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
@@ -260,6 +388,10 @@ controls.addEventListener('lock', () => {
          gameState = 'playing';
     }
     messageBox.style.display = 'none';
+    // Begin the tutorial level on first lock, otherwise level progression is handled when finishing.
+    if (gameState === 'playing') startLevel(currentLevel);
+    const prox = initProximityAudio();
+    if (prox && prox.ctx && prox.ctx.state === 'suspended') prox.ctx.resume();
 });
 
 controls.addEventListener('unlock', () => {
@@ -268,6 +400,7 @@ controls.addEventListener('unlock', () => {
          messageTitle.textContent = 'PAUSED';
          messageText.textContent = 'Click to Resume';
     }
+    if (proximityAudio && proximityAudio.gain) proximityAudio.gain.gain.setTargetAtTime(0, proximityAudio.ctx.currentTime, 0.01);
 });
 
 document.addEventListener('keydown', (e) => {
@@ -289,8 +422,11 @@ document.addEventListener('keyup', (e) => {
 });
 
 // --- GHOSTS ---
+// Brutal difficulty flag: when true, all ghosts always pathfind to the player using A*
+const BRUTAL_MODE = true;
+
 class Ghost {
-    constructor(color, startPos) {
+    constructor(color, startPos, type = 'generic') {
         this.startPos = startPos;
         const geometry = new THREE.CapsuleGeometry(0.4, 0.6, 4, 8);
         this.normalMaterial = new THREE.MeshBasicMaterial({ color });
@@ -300,8 +436,11 @@ class Ghost {
         scene.add(this.mesh);
 
                 this.speed = 1.5; // Reduced from 1.8 to make ghosts slightly slower
-                this.state = 'chasing'; // chasing, frightened, eaten
+                this.type = type; // blinky/pinky/inky/clyde/generic
+                this.state = 'chasing'; // chasing, frightened, eaten, scatter
                 this.frightenedTimer = 0;
+                this.path = null;
+                this.repath = 0;
     }
 
     reset() {
@@ -322,19 +461,52 @@ class Ghost {
                 }
             }
         }
-         if (this.state === 'eaten') {
+        if (this.state === 'eaten') {
             const distanceToStart = this.mesh.position.distanceTo(this.startPos);
             if (distanceToStart < 0.5) {
                 this.state = 'chasing';
                 this.mesh.material = this.normalMaterial;
+                if (this.eyeLeft) { scene.remove(this.eyeLeft); scene.remove(this.eyeRight); delete this.eyeLeft; delete this.eyeRight; }
             } else {
                this.moveTowards(this.startPos, delta * 2); // Move back to pen faster
             }
+            // update eyes to follow
+            if (this.eyeLeft) this.eyeLeft.position.set(this.mesh.position.x - 0.08, 0.8, this.mesh.position.z - 0.12);
+            if (this.eyeRight) this.eyeRight.position.set(this.mesh.position.x + 0.08, 0.8, this.mesh.position.z - 0.12);
             return;
         }
 
         const target = (this.state === 'frightened') ? this.getFleeTarget(playerPosition) : playerPosition;
-        this.moveTowards(target, delta);
+
+        if (this.state === 'frightened' || this.state === 'eaten') {
+            this.moveTowards(target, delta);
+        } else {
+            // Decide chase offset based on ghost type. If BRUTAL_MODE is enabled, always chase the exact player tile.
+            let chaseTarget = playerPosition.clone();
+            if (!BRUTAL_MODE) {
+            if (this.type === 'pinky') {
+                const ahead = camera.getWorldDirection(new THREE.Vector3()).multiplyScalar(4 * TILE_SIZE);
+                chaseTarget = playerPosition.clone().add(ahead);
+            } else if (this.type === 'inky') {
+                const blinky = ghosts.find(g => g.type === 'blinky');
+                if (blinky) {
+                    const vec = new THREE.Vector3().subVectors(playerPosition, blinky.mesh.position).multiplyScalar(2);
+                    chaseTarget = playerPosition.clone().add(vec);
+                }
+            } else if (this.type === 'clyde') {
+                const dist = this.mesh.position.distanceTo(playerPosition);
+                // Clyde: when distant, chase player; when too close, scatter to corner.
+                if (dist > 6 * TILE_SIZE) {
+                    chaseTarget = playerPosition.clone();
+                } else {
+                    chaseTarget = this.getScatterTarget();
+                }
+            }
+            }
+            // Support scatter mode switching
+            if (ghostMode === 'scatter') chaseTarget = this.getScatterTarget();
+            this.followPathTo(chaseTarget, delta);
+        }
     }
     
     moveTowards(target, delta) {
@@ -369,6 +541,29 @@ class Ghost {
         }
     }
 
+    followPathTo(target, delta) {
+        this.repath -= delta;
+        const ghostPos = this.mesh.position;
+        const start = { x: Math.round(ghostPos.x / TILE_SIZE), z: Math.round(ghostPos.z / TILE_SIZE)};
+        const goal = { x: Math.round(target.x / TILE_SIZE), z: Math.round(target.z / TILE_SIZE)};
+        if (!this.path || this.repath <= 0) {
+            this.path = getPath(start, goal);
+            // in brutal mode: recalc path more often so ghosts react faster
+            this.repath = BRUTAL_MODE ? (0.12 + Math.random() * 0.06) : (0.35 + Math.random() * 0.2);
+        }
+        if (this.path && this.path.length > 1) {
+            const next = this.path[1];
+            const nextCenter = new THREE.Vector3(next.x * TILE_SIZE, ghostPos.y, next.z * TILE_SIZE);
+            const dir = new THREE.Vector3().subVectors(nextCenter, ghostPos).normalize();
+            const move = dir.multiplyScalar(this.speed * delta);
+            const tempX = ghostPos.clone(); tempX.x += move.x; if (!this.isWall(tempX)) ghostPos.x = tempX.x;
+            const tempZ = ghostPos.clone(); tempZ.z += move.z; if (!this.isWall(tempZ)) ghostPos.z = tempZ.z;
+        } else {
+            // fallback to direct movement
+            this.moveTowards(target, delta);
+        }
+    }
+
     isWall(pos) {
         const margin = 0.5; // Collision margin
         const tileX = Math.round(pos.x / TILE_SIZE);
@@ -391,23 +586,44 @@ class Ghost {
         return this.fleeCorner;
     }
 
+    getScatterTarget() {
+        // Use type-specific corners for scatter
+        if (this.type === 'blinky') return new THREE.Vector3(17*TILE_SIZE,0,1*TILE_SIZE);
+        if (this.type === 'pinky') return new THREE.Vector3(1*TILE_SIZE,0,1*TILE_SIZE);
+        if (this.type === 'inky') return new THREE.Vector3(17*TILE_SIZE,0,18*TILE_SIZE);
+        return new THREE.Vector3(1*TILE_SIZE,0,18*TILE_SIZE);
+    }
+
     frighten() {
         this.state = 'frightened';
-        this.frightenedTimer = 8; // 8 seconds
+        this.frightenedTimer = (levels[currentLevel] && levels[currentLevel].frightenedDuration) || 8; // seconds from level config
         this.mesh.material = this.frightenedMaterial;
+        this.path = null;
+        // brighten the scene when ghosts are frightened
+        targetAmbientIntensity = AMBIENT_INTENSITY_BRIGHT;
     }
     
     eat() {
         this.state = 'eaten';
         // You could add a simple "eyes" mesh that remains visible
+        // Use a bright material and small eyes to indicate eaten state
+        this.mesh.material = new THREE.MeshBasicMaterial({ color: 0xffffff });
+        const eyeGeo = new THREE.SphereGeometry(0.06, 6, 6);
+        const eyeMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+        this.eyeLeft = new THREE.Mesh(eyeGeo, eyeMat);
+        this.eyeRight = new THREE.Mesh(eyeGeo, eyeMat);
+        scene.add(this.eyeLeft); scene.add(this.eyeRight);
+        // eyes follow visual position
+        this.eyeLeft.position.set(this.mesh.position.x - 0.08, 0.8, this.mesh.position.z - 0.12);
+        this.eyeRight.position.set(this.mesh.position.x + 0.08, 0.8, this.mesh.position.z - 0.12);
     }
 }
 
 const ghosts = [
-    new Ghost(0xff0000, { x: 9 * TILE_SIZE, z: 8 * TILE_SIZE }), // Blinky (Red)
-    new Ghost(0xffb8ff, { x: 9 * TILE_SIZE, z: 9 * TILE_SIZE }), // Pinky (Pink)
-    new Ghost(0x00ffff, { x: 8 * TILE_SIZE, z: 9 * TILE_SIZE }), // Inky (Cyan)
-    new Ghost(0xffb851, { x: 10 * TILE_SIZE, z: 9 * TILE_SIZE }),// Clyde (Orange)
+    new Ghost(0xff0000, { x: 9 * TILE_SIZE, z: 8 * TILE_SIZE }, 'blinky'), // Blinky (Red)
+    new Ghost(0xffb8ff, { x: 9 * TILE_SIZE, z: 9 * TILE_SIZE }, 'pinky'), // Pinky (Pink)
+    new Ghost(0x00ffff, { x: 8 * TILE_SIZE, z: 9 * TILE_SIZE }, 'inky'), // Inky (Cyan)
+    new Ghost(0xffb851, { x: 10 * TILE_SIZE, z: 9 * TILE_SIZE }, 'clyde'),// Clyde (Orange)
 ];
 
 // --- GAME LOGIC & ANIMATION ---
@@ -427,6 +643,19 @@ function animate() {
         ghosts.forEach(ghost => ghost.update(delta, camera.position));
         updateProximityOverlay();
     }
+
+    // Alternate ghost chase/scatter modes
+    modeTimer += delta;
+    if (modeTimer > 12) { ghostMode = (ghostMode === 'chase') ? 'scatter' : 'chase'; modeTimer = 0; }
+
+    // Proximity audio: measure nearest 'chasing' ghost and modulate tone
+    let nearest = Infinity;
+    for (const g of ghosts) {
+        if (g.state === 'chasing') {
+            nearest = Math.min(nearest, camera.position.distanceTo(g.mesh.position));
+        }
+    }
+    if (nearest < Infinity) updateProximityAudio(nearest);
 
     // Render through composer so emissive materials bloom without dynamic lights
     composer.render();
@@ -485,16 +714,50 @@ function checkCollisions() {
                 // When a power pellet is eaten, brighten the lights and frighten the ghosts.
                 targetAmbientIntensity = AMBIENT_INTENSITY_BRIGHT;
                 ghosts.forEach(g => g.frighten());
+                // reset consecutive eat multiplier
+                consecutiveGhostEaten = 0;
+                    playSound('power');
             } else {
                 score += 10;
+                // increment immediately for quick feedback
+                coinsCollected += 1;
+                // play a short 'chomp' sound like OG Pac-Man
+                playChomp();
             }
             scoreEl.textContent = `Score: ${score}`;
             scene.remove(pellet);
             pellets.splice(i, 1);
-            
+            // Fallback: recompute coins collected from remaining pellets (robust sync)
+            coinsCollected = (totalCoins || 0) - pellets.filter(p => !p.isPowerPellet).length;
+            updateCoinsUI();
+
+            // Progression by coin goal
+            if (coinsCollected >= levelGoalCount) {
+                if (currentLevel < levels.length - 1) {
+                    messageTitle.textContent = `Level ${currentLevel + 1} Complete!`;
+                    messageText.textContent = `Proceeding to ${levels[currentLevel + 1].name}`;
+                    messageBox.style.display = 'flex';
+                    setTimeout(()=>{ messageBox.style.display = 'none'; resetGame(); currentLevel++; startLevel(currentLevel); playSound('level_up'); }, 1500);
+                } else {
+                    playerWins();
+                }
+            }
+
+            // If all pellets were consumed, game win
             if (pellets.filter(p => !p.isPowerPellet).length === 0) {
                 playerWins();
             }
+        }
+    }
+
+    // Powerups (pickups)
+    for (let i = powerupObjects.length - 1; i >= 0; i--) {
+        const pu = powerupObjects[i];
+        if (camera.position.distanceTo(pu.mesh.position) < 0.8) {
+            activatePowerup(pu.type);
+            playSound('power');
+            scene.remove(pu.mesh);
+            powerupObjects.splice(i, 1);
         }
     }
 
@@ -503,9 +766,17 @@ function checkCollisions() {
         if (camera.position.distanceTo(ghost.mesh.position) < 0.5) {
             // If the player collides with a frightened ghost, the player eats it.
             if (ghost.state === 'frightened') {
-                score += 200;
+                consecutiveGhostEaten = (consecutiveGhostEaten || 0) + 1;
+                const reward = 200 * Math.pow(2, consecutiveGhostEaten - 1);
+                // apply double score powerup
+                const doubleActive = activePowerups && activePowerups.doubleScore && (Date.now() < activePowerups.doubleScore);
+                score += (doubleActive ? reward * 2 : reward);
                 scoreEl.textContent = `Score: ${score}`;
                 ghost.eat();
+                playSound('ghost_eaten');
+                setTimeout(()=>{
+                    if (ghost.eyeLeft) { scene.remove(ghost.eyeLeft); scene.remove(ghost.eyeRight); }
+                }, 1400);
             } else if (ghost.state === 'chasing') {
                 // Otherwise, if the ghost is chasing, the player loses a life.
                 playerLosesLife();
@@ -558,6 +829,141 @@ function updateProximityOverlay() {
     overlayLeft.style.opacity = Math.min(MAX_OPACITY, totalInfluence.left);
     overlayRight.style.opacity = Math.min(MAX_OPACITY, totalInfluence.right);
 }
+
+function updateCoinsUI() {
+    if (!coinsEl) return;
+        // fallback: recompute from remaining pellets to keep in sync
+        coinsCollected = (totalCoins || 0) - pellets.filter(p => !p.isPowerPellet).length;
+        coinsEl.textContent = `Coins: ${coinsCollected}/${levelGoalCount || totalCoins}`;
+}
+
+// --- PATHFINDING (BFS) ---
+function getNeighbors(tile) {
+    const deltas = [ {x:1,z:0}, {x:-1,z:0}, {x:0,z:1}, {x:0,z:-1} ];
+    const out = [];
+    for (const d of deltas) {
+        const nx = tile.x + d.x;
+        const nz = tile.z + d.z;
+        if (nx < 0 || nx >= mazeWidth || nz < 0 || nz >= mazeHeight) continue;
+        if (mazeLayout[nz][nx] !== 1) out.push({x:nx, z:nz});
+    }
+    return out;
+}
+
+function getPath(start, goal) {
+    // A* pathfinding for better ghost navigation
+    const key = (t)=>t.x+','+t.z;
+    if (!mazeLayout[goal.z] || mazeLayout[goal.z][goal.x] === 1) return null;
+
+    function heuristic(a,b) { return Math.abs(a.x - b.x) + Math.abs(a.z - b.z); }
+
+    const openSet = [start];
+    const cameFrom = {};
+    const gScore = {};
+    const fScore = {};
+    gScore[key(start)] = 0;
+    fScore[key(start)] = heuristic(start, goal);
+    cameFrom[key(start)] = null;
+
+    while (openSet.length) {
+        // pop node with lowest fScore
+        openSet.sort((a,b) => (fScore[key(a)] || 1e9) - (fScore[key(b)] || 1e9));
+        const current = openSet.shift();
+        if (current.x === goal.x && current.z === goal.z) {
+            // reconstruct path
+            const path = [];
+            let cur = current;
+            while (cur) { path.push(cur); cur = cameFrom[key(cur)]; }
+            return path.reverse();
+        }
+
+        for (const n of getNeighbors(current)) {
+            const tentativeG = (gScore[key(current)] || 1e9) + 1;
+            if (tentativeG < (gScore[key(n)] || 1e9)) {
+                cameFrom[key(n)] = current;
+                gScore[key(n)] = tentativeG;
+                fScore[key(n)] = tentativeG + heuristic(n, goal);
+                if (!openSet.some(o => o.x === n.x && o.z === n.z)) openSet.push(n);
+            }
+        }
+    }
+    return null;
+}
+
+// --- POWERUPS ---
+const POWERUP_TYPES = ['speed', 'freeze', 'doubleScore'];
+const activePowerups = {};
+
+function spawnPowerupsFromLevel() {
+    // spawn one special powerup randomly on an empty tile
+    const freeTiles = [];
+    for (let z=0; z<mazeHeight; z++) for (let x=0; x<mazeWidth; x++) if (mazeLayout[z][x] !== 1 && mazeLayout[z][x] !== 4) freeTiles.push({x,z});
+    if (!freeTiles.length) return;
+    const rnd = freeTiles[Math.floor(Math.random()*freeTiles.length)];
+    const puType = POWERUP_TYPES[Math.floor(Math.random()*POWERUP_TYPES.length)];
+    const mesh = new THREE.Mesh(new THREE.TorusGeometry(0.25, 0.06, 8, 12), new THREE.MeshBasicMaterial({ color: puType==='speed' ? 0x44ff44 : puType==='freeze' ? 0x4488ff : 0xffcc44 }));
+    mesh.position.set(rnd.x * TILE_SIZE, 0.5, rnd.z * TILE_SIZE);
+    scene.add(mesh);
+    powerupObjects.push({type: puType, mesh});
+}
+
+function activatePowerup(type) {
+    const duration = 8; // sec
+    if (type === 'speed') {
+        const previousSpeed = playerSpeed;
+        playerSpeed = Math.max(3.0, playerSpeed + 1.6);
+        setTimeout(()=>{ playerSpeed = previousSpeed; }, duration * 1000);
+        showPowerupUI('Speed Boost', duration);
+    } else if (type === 'freeze') {
+        ghosts.forEach(g => { if (g.state === 'chasing' || g.state === 'scatter') { g.prevState = g.state; g.state = 'frightened'; g.frightenedTimer = duration; g.mesh.material = g.frightenedMaterial; }});
+        showPowerupUI('Freeze Ghosts', duration);
+    } else if (type === 'doubleScore') {
+        activePowerups.doubleScore = Date.now() + duration*1000;
+        showPowerupUI('Double Score', duration);
+    }
+}
+
+function showPowerupUI(name, duration) {
+    const el = document.createElement('div');
+    el.className = 'powerup';
+    el.innerHTML = `<div>${name} <span class='timer'>(${duration}s)</span></div>`;
+    powerupsEl.appendChild(el);
+    const start = Date.now();
+    const interval = setInterval(()=>{ const left = Math.max(0, duration - Math.floor((Date.now()-start)/1000)); el.querySelector('.timer').textContent = `(${left}s)`; if (left===0) { clearInterval(interval); el.remove(); } }, 300);
+}
+
+// --- LEVELS & DIFFICULTY SETTINGS ---
+const levels = [
+    { name: 'Tutorial', ghostSpeed: 1.1, frightenedDuration: 12, ghostCount: 1, pelletGoal: 8 },
+    // pelletGoal: absolute number; if <=1 it's treated as fraction of total
+    { name: 'Level 1', ghostSpeed: 1.6, frightenedDuration: 10, ghostCount: 2, pelletGoal: 20 },
+    { name: 'Level 2', ghostSpeed: 2.0, frightenedDuration: 8, ghostCount: 3, pelletGoal: 0.55 },
+    { name: 'Level 3', ghostSpeed: 2.6, frightenedDuration: 6, ghostCount: 4, pelletGoal: 1.0 }
+];
+
+let currentLevel = 0;
+let ghostMode = 'chase';
+let modeTimer = 0;
+
+function startLevel(index) {
+    currentLevel = Math.min(index, levels.length-1);
+    const cfg = levels[currentLevel];
+    ghosts.forEach((g,i) => {
+        // Make ghosts noticeably faster in brutal mode
+        g.speed = BRUTAL_MODE ? cfg.ghostSpeed * 1.35 : cfg.ghostSpeed;
+        g.reset();
+        g.mesh.visible = i < cfg.ghostCount;
+    });
+    spawnPowerupsFromLevel();
+    levelEl.textContent = `${cfg.name}`;
+    // recalc coin goal based on pellets in the level
+    totalCoins = pellets.filter(p => !p.isPowerPellet).length;
+    if (cfg.pelletGoal === undefined) levelGoalCount = totalCoins;
+    else if (cfg.pelletGoal <= 1) levelGoalCount = Math.ceil(totalCoins * cfg.pelletGoal);
+    else levelGoalCount = Math.max(0, Math.min(totalCoins, cfg.pelletGoal));
+    coinsCollected = 0;
+    updateCoinsUI();
+}
     
 function playerLosesLife() {
     lives--;
@@ -565,9 +971,9 @@ function playerLosesLife() {
     if (lives <= 0) {
         gameOver();
     } else {
-        // Reset positions
-        camera.position.set(playerSpawn.x, 0.5, playerSpawn.z);
-        ghosts.forEach(g => g.reset());
+        // Show 'YOU DIED' overlay and respawn after short delay
+        playSound('die');
+        showYouDiedScreen(3);
     }
 }
     
@@ -577,14 +983,50 @@ function gameOver() {
     messageText.textContent = `Final Score: ${score}\nClick to Restart`;
     messageBox.style.display = 'flex';
     controls.unlock();
+    // fade out proximity audio
+    if (proximityAudio && proximityAudio.gain) proximityAudio.gain.gain.setTargetAtTime(0, proximityAudio.ctx.currentTime, 0.02);
+}
+
+function showYouDiedScreen(seconds) {
+    gameState = 'dying';
+    youDiedEl.style.display = 'block';
+    let left = seconds;
+    respawnCounterEl.textContent = left;
+    const interval = setInterval(()=>{
+        left--;
+        respawnCounterEl.textContent = Math.max(0,left);
+        if (left <= 0) {
+            clearInterval(interval);
+            youDiedEl.style.display = 'none';
+            // respawn player
+            camera.position.set(playerSpawn.x, 0.5, playerSpawn.z);
+            ghosts.forEach(g => g.reset());
+            // fade out proximity audio briefly
+            if (proximityAudio && proximityAudio.gain) proximityAudio.gain.gain.setTargetAtTime(0, proximityAudio.ctx.currentTime, 0.02);
+            gameState = 'playing';
+        }
+    }, 1000);
 }
     
 function playerWins() {
-    gameState = 'won';
-     messageTitle.textContent = 'YOU WIN!';
-    messageText.textContent = `Final Score: ${score}\nClick to Restart`;
-    messageBox.style.display = 'flex';
-    controls.unlock();
+    // Advance to next level if available
+    if (currentLevel < levels.length - 1) {
+        currentLevel++;
+        // reset game for the next level
+        resetGame();
+        startLevel(currentLevel);
+        // display a level-up notice but keep playing
+        messageTitle.textContent = `LEVEL ${currentLevel}!`;
+        messageText.textContent = `Get ready for ${levels[currentLevel].name}`;
+        messageBox.style.display = 'flex';
+        setTimeout(()=>{ messageBox.style.display = 'none'; controls.lock(); }, 2000);
+    } else {
+        gameState = 'won';
+        messageTitle.textContent = 'YOU WIN!';
+        messageText.textContent = `Final Score: ${score}\nClick to Restart`;
+        messageBox.style.display = 'flex';
+        controls.unlock();
+    }
 }
     
 function resetGame() {
@@ -596,6 +1038,9 @@ function resetGame() {
     // Remove old pellets and create new ones
     pellets.forEach(p => scene.remove(p));
     pellets.length = 0;
+    // Remove powerups
+    powerupObjects.forEach(p => scene.remove(p.mesh));
+    powerupObjects.length = 0;
     
      for (let i = 0; i < mazeHeight; i++) {
         for (let j = 0; j < mazeWidth; j++) {
@@ -624,6 +1069,15 @@ function resetGame() {
 
     camera.position.set(playerSpawn.x, 0.5, playerSpawn.z);
     ghosts.forEach(g => g.reset());
+    // compute total coins and reset counters
+    coinsCollected = 0;
+    totalCoins = pellets.filter(p => !p.isPowerPellet).length;
+    // default goal is all coins if not specified
+    const cfg = levels[currentLevel] || {};
+    if (cfg.pelletGoal === undefined) levelGoalCount = totalCoins;
+    else if (cfg.pelletGoal <= 1) levelGoalCount = Math.ceil(totalCoins * cfg.pelletGoal);
+    else levelGoalCount = Math.max(0, Math.min(totalCoins, cfg.pelletGoal));
+    updateCoinsUI();
 }
 
 window.addEventListener('resize', () => {

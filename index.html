@@ -9,11 +9,18 @@
     <div id="ui-container">
         <div id="score">Score: 0</div>
         <div id="lives">Lives: 3</div>
+        <div id="coins">Coins: 0/0</div>
         <div id="message-box">
             <h1>3D PAC-MAN</h1>
             <p>Click to Start</p>
         <p class="controls">W, A, S, D to move<br>Mouse to look</p>
         </div>
+    </div>
+
+    <!-- You died screen (shown on life loss) -->
+    <div id="you-died" style="display:none;">
+        <h1>YOU DIED</h1>
+        <p>Respawning in <span id="respawn-count">3</span>...</p>
     </div>
 
     <script type="importmap">
@@ -24,6 +31,7 @@
         }
     }
     </script>
+    <script src="https://code.createjs.com/1.0.0/soundjs.min.js"></script>
 
     <script type="module" src="js/main.js"></script>
 </body>

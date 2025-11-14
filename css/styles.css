@@ -1,6 +1,7 @@
 /* Extracted styles from index.html */
 body { margin: 0; overflow: hidden; background: #000; }
 canvas { display: block; }
+/* UI tweaks for clearer HUD */
 #ui-container {
     position: absolute;
     top: 0;
@@ -8,7 +9,7 @@ canvas { display: block; }
     width: 100%;
     height: 100%;
     color: white;
-    font-family: 'Monaco', 'Courier New', monospace;
+    font-family: Inter, system-ui, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;
     pointer-events: none; /* Let clicks pass through to the canvas */
 }
 #score {
@@ -17,7 +18,8 @@ canvas { display: block; }
     left: 20px;
     font-size: 24px;
 }
-#lives {
+/* HUD elements */
+#score {
     position: absolute;
     top: 20px;
     right: 20px;
@@ -31,6 +33,9 @@ canvas { display: block; }
     background: rgba(0, 0, 0, 0.7);
     padding: 40px;
     border-radius: 10px;
+    background: rgba(0,0,0,0.4);
+    padding: 8px 12px;
+    border-radius: 10px;
     text-align: center;
     font-size: 28px;
     display: flex;
@@ -41,3 +46,50 @@ canvas { display: block; }
 #message-box h1 { margin-top: 0; }
 
 .controls { font-size: 16px; }
+
+/* Powerup/status UI */
+#powerup-status {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    top: 20px;
+    display: flex;
+    gap: 8px;
+    pointer-events: none;
+}
+.powerup {
+    min-width: 120px;
+    padding: 6px 10px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+}
+.powerup span.timer { opacity: 0.9; }
+
+/* Coins counter */
+#coins {
+    position: absolute;
+    top: 60px;
+    left: 20px;
+    font-size: 18px;
+    background: rgba(0,0,0,0.4);
+    padding: 6px 10px;
+    border-radius: 8px;
+}
+
+/* You died overlay */
+#you-died {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(0,0,0,0.9);
+    color: #ffdddd;
+    padding: 30px 40px;
+    border-radius: 12px;
+    text-align: center;
+    font-family: Inter, system-ui, 'Segoe UI', Roboto, sans-serif;
+}
