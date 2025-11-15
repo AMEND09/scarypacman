@@ -174,6 +174,36 @@ const coinsEl = document.getElementById('coins');
 const youDiedEl = document.getElementById('you-died');
 const respawnCounterEl = document.getElementById('respawn-count');
 
+// Tutorial overlay elements (shown before the Click-to-Start message)
+const tutorialEl = document.getElementById('tutorial');
+const tutorialContinueBtn = tutorialEl ? tutorialEl.querySelector('.tutorial-continue') : null;
+
+// Show tutorial on initial load and hide the click-to-start message until user continues
+if (tutorialEl) {
+    tutorialEl.style.display = 'flex';
+    if (messageBox) messageBox.style.display = 'none';
+}
+
+if (tutorialContinueBtn) {
+    tutorialContinueBtn.addEventListener('click', (e) => {
+        // Hide the tutorial and reveal the click-to-start prompt
+        tutorialEl.style.display = 'none';
+        if (messageBox) messageBox.style.display = 'flex';
+        // focus canvas for pointer lock sequence is triggered by clicking the message box
+    });
+    // Allow keyboard continuation (Enter/Space)
+    tutorialContinueBtn.addEventListener('keyup', (ev) => {
+        if (ev.key === 'Enter' || ev.code === 'Space') tutorialContinueBtn.click();
+    });
+    // also allow skipping tutorial with Escape key
+    document.addEventListener('keydown', (ev) => {
+        if ((ev.key === 'Escape' || ev.key === 'Enter') && tutorialEl && tutorialEl.style.display !== 'none') {
+            tutorialEl.style.display = 'none';
+            if (messageBox) messageBox.style.display = 'flex';
+        }
+    });
+}
+
 // Powerups UI overlay (center)
 const powerupsEl = document.createElement('div');
 powerupsEl.id = 'powerup-status';
