@@ -1,4 +1,4 @@
-# ScaryPacman — 3D First-Person Pac-Man
+# 3D First-Person Pac-Man (I couldn't think of a better name so this is the placeholder lol)
 
 ## Installation & Running
 1. Clone or download this repository.
@@ -8,6 +8,7 @@
 ```powershell
 # From repository root
 python -m http.server 8000
+# Requires you to have Python installed, but is typically the standard way for hosting static files, I'd recommend just using the hosted link though.
 ```
 
 4. Open http://localhost:8000 in a modern browser (Chrome, Firefox). Click the center overlay to lock the pointer and begin.
