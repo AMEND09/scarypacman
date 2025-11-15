@@ -32,7 +32,7 @@ The original Pac-Man design focuses on accessible, continuous navigation through
 
 ---
 
-## Additional notes (not on website) — up to 150 words
+## Additional notes (not on website) up to 150 words
 This build uses A* pathfinding so ghosts compute realistic shortest paths and avoid obstacles. The `BRUTAL_MODE` constant forces every ghost to path directly to the player and increases reaction frequency for a high-difficulty mode, enable it per level or tweak speed multipliers in `js/main.js`. The `public/assets/scary-scream-3-81274.mp3` file is the death sound; you can replace or remove it. Sound playback requires a user gesture to start (click message box) so the browser will allow audio.
 
 ---
